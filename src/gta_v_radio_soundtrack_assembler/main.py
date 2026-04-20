@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import json
 import re
 import subprocess
@@ -13,6 +14,14 @@ from typing import Annotated, Literal
 
 import typer
 from rich.console import Console
+from rich.progress import (
+	BarColumn,
+	MofNCompleteColumn,
+	Progress,
+	SpinnerColumn,
+	TextColumn,
+	TimeElapsedColumn,
+)
 from rich.table import Table
 
 app = typer.Typer()
@@ -55,7 +64,7 @@ class MusicUnit:
 class ChainSlot:
 	"""Represents one speech chain before one music unit."""
 
-	id_tracks: list[str] = field(default_factory=list)
+	id_track: str | None = None
 	daypart_track: str | None = None
 	daypart_kind: Literal["MORNING", "EVENING"] | None = None
 	general_tracks: list[str] = field(default_factory=list)
@@ -64,7 +73,8 @@ class ChainSlot:
 	def as_list(self) -> list[str]:
 		"""Return speech items in fixed chain order."""
 		items: list[str] = []
-		items.extend(self.id_tracks)
+		if self.id_track is not None:
+			items.append(self.id_track)
 		if self.daypart_track is not None:
 			items.append(self.daypart_track)
 		items.extend(self.general_tracks)
@@ -242,9 +252,17 @@ def _build_music_units(
 def _allocate_speech_chains(  # noqa: C901, PLR0912, PLR0915
 	unit_count: int,
 	speech_pools: dict[str, list[str]],
+	duration_by_token: dict[str, float] | None = None,
 ) -> list[ChainSlot]:
 	"""Allocate speech chains across music units."""
 	chains = [ChainSlot() for _ in range(unit_count)]
+	if duration_by_token is None:
+		duration_by_token = {}
+
+	def _token_duration(token: str) -> float:
+		# Unknown durations are treated as long so they are less likely
+		# to be placed in consecutive overflow slots.
+		return duration_by_token.get(token, 10_000.0)
 
 	def _allocate_single_slot_category(
 		category: str,
@@ -279,7 +297,7 @@ def _allocate_speech_chains(  # noqa: C901, PLR0912, PLR0915
 
 	# Opening chain prioritization.
 	if speech_pools["ID"]:
-		chains[0].id_tracks.append(speech_pools["ID"].pop(0))
+		chains[0].id_track = speech_pools["ID"].pop(0)
 
 	if speech_pools["MORNING"]:
 		chains[0].daypart_track = speech_pools["MORNING"].pop(0)
@@ -296,7 +314,19 @@ def _allocate_speech_chains(  # noqa: C901, PLR0912, PLR0915
 
 	available_indices = list(range(1, unit_count)) if unit_count > 1 else []
 
-	_allocate_multi_slot_category("ID", "id_tracks")
+	id_tracks = speech_pools["ID"]
+	if id_tracks:
+		if len(id_tracks) > len(available_indices):
+			remaining_ids = len(id_tracks)
+			available_chains = len(available_indices)
+			message = (
+				"Could not place all ID tracks with one-per-chain spacing. "
+				f"Remaining IDs: {remaining_ids}, "
+				f"available chains: {available_chains}."
+			)
+			_fail(message)
+
+		_allocate_single_slot_category("ID", "id_track", available_indices)
 
 	# Allocate MORNING with front bias.
 	morning_tracks = speech_pools["MORNING"]
@@ -344,7 +374,46 @@ def _allocate_speech_chains(  # noqa: C901, PLR0912, PLR0915
 			chains[index].daypart_kind = "EVENING"
 		speech_pools["EVENING"] = []
 
-	_allocate_multi_slot_category("GENERAL", "general_tracks")
+	general_tracks = speech_pools["GENERAL"]
+	if general_tracks:
+		remaining_general = general_tracks.copy()
+		speech_pools["GENERAL"] = []
+
+		# Phase 1: minimize duplicates by giving one GENERAL to chains that still
+		# do not have one. Assign longer clips first so overflow streaks can use
+		# shorter clips when unavoidable.
+		empty_general_indices = [
+			index for index, chain in enumerate(chains) if not chain.general_tracks
+		]
+		empty_capacity = min(len(empty_general_indices), len(remaining_general))
+		singles = sorted(
+			remaining_general,
+			key=lambda token: (_token_duration(token), token),
+			reverse=True,
+		)[:empty_capacity]
+
+		used_singles = set(singles)
+		remaining_general = [
+			token for token in remaining_general if token not in used_singles
+		]
+
+		for token, index in zip(singles, empty_general_indices, strict=True):
+			chains[index].general_tracks.append(token)
+
+		# Phase 2: overflow GENERAL clips are unavoidable duplicates.
+		# Place shorter clips first and distribute by smallest current streak.
+		extra_tokens = sorted(
+			remaining_general,
+			key=lambda token: (_token_duration(token), token),
+		)
+		heap: list[tuple[int, int]] = [
+			(len(chain.general_tracks), index) for index, chain in enumerate(chains)
+		]
+		heapq.heapify(heap)
+		for token in extra_tokens:
+			count, index = heapq.heappop(heap)
+			chains[index].general_tracks.append(token)
+			heapq.heappush(heap, (count + 1, index))
 
 	mono_tracks = speech_pools["MONO_SOLO"]
 	if mono_tracks:
@@ -500,18 +569,39 @@ def _probe_audio_format(audio_file: Path) -> AudioFormat:
 	)
 
 
+def _probe_audio_duration_seconds(audio_file: Path) -> float:
+	"""Return duration in seconds for one audio file."""
+	output = _run_subprocess_output(
+		[
+			"ffprobe",
+			"-v",
+			"error",
+			"-show_entries",
+			"format=duration",
+			"-of",
+			"default=noprint_wrappers=1:nokey=1",
+			str(audio_file),
+		],
+		description=f"Probing duration for {audio_file.name}",
+	)
+
+	try:
+		return float(output.strip())
+	except ValueError as exc:
+		message = f"Failed to parse duration for {audio_file}: {exc}"
+		_fail(message)
+	return 0.0
+
+
 def _trim_true_silence(
 	input_file: Path,
 	output_file: Path,
 	audio_format: AudioFormat,
-	silence_threshold_db: float,
 ) -> None:
-	"""Trim leading/trailing near-silence from a speech clip."""
-	threshold_expr = f"{silence_threshold_db}dB"
+	"""Trim digitally-zero leading/trailing silence from a speech clip."""
 	filter_expr = (
-		"silenceremove="
-		f"start_periods=1:start_silence=0.02:start_threshold={threshold_expr}:"
-		f"stop_periods=1:stop_silence=0.02:stop_threshold={threshold_expr}"
+		"silenceremove=window=0:detection=peak"
+		":stop_mode=all:stop_periods=-1:stop_threshold=0"
 	)
 	_run_subprocess(
 		[
@@ -599,6 +689,30 @@ def _index_station_audio_files(station_audio_dir: Path) -> dict[str, Path]:
 	return file_map
 
 
+def _build_duration_index(
+	audio_root: Path,
+	input_file: Path,
+) -> tuple[dict[str, float], list[str]]:
+	"""Best-effort token duration index used for scheduling optimization."""
+	station_dir = audio_root / input_file.stem
+	if not station_dir.exists() or not station_dir.is_dir():
+		return {}, []
+
+	audio_index = _index_station_audio_files(station_dir)
+	duration_index: dict[str, float] = {}
+	warnings: list[str] = []
+	for token, audio_file in audio_index.items():
+		try:
+			duration_index[token] = _probe_audio_duration_seconds(audio_file)
+		except AssemblerError:
+			warnings.append(
+				"Duration probe failed for "
+				f"{audio_file.name}; using fallback scheduling weight.",
+			)
+
+	return duration_index, warnings
+
+
 def _resolve_audio_file(token: str, audio_index: dict[str, Path]) -> Path:
 	"""Resolve one token to a real station audio file path."""
 	resolved = audio_index.get(token)
@@ -614,7 +728,6 @@ def _render_speech_block(
 	speech_tokens: list[str],
 	audio_index: dict[str, Path],
 	output_file: Path,
-	silence_threshold_db: float,
 ) -> Path:
 	"""Trim and concatenate speech block clips."""
 	if not speech_tokens:
@@ -626,29 +739,42 @@ def _render_speech_block(
 
 	with tempfile.TemporaryDirectory(prefix="gta_radio_trim_") as tmp_dir:
 		tmp_dir_path = Path(tmp_dir)
-		trimmed_files: list[Path] = []
-		for idx, input_file in enumerate(input_files, start=1):
+		trimmed_files: list[tuple[Path, str]] = []
+		for idx, (token, input_file) in enumerate(
+			zip(speech_tokens, input_files, strict=True),
+			start=1,
+		):
 			trimmed_path = tmp_dir_path / f"trim_{idx:03d}{output_file.suffix}"
 			_trim_true_silence(
 				input_file,
 				trimmed_path,
 				format_ref,
-				silence_threshold_db,
 			)
-			trimmed_files.append(trimmed_path)
+			trimmed_duration = _probe_audio_duration_seconds(trimmed_path)
+			if trimmed_duration < 0.1:  # noqa: PLR2004
+				message = (
+					f"Token '{token}' trimmed to near-silence "
+					f"(duration: {trimmed_duration:.2f}s). "
+					"The audio file may be empty or contain only digital silence."
+				)
+				_fail(message)
+			trimmed_files.append((trimmed_path, token))
 
-		_concat_audio_files(trimmed_files, output_file)
+		if not trimmed_files:
+			message = "All speech tokens were trimmed to silence."
+			_fail(message)
+
+		_concat_audio_files([path for path, _ in trimmed_files], output_file)
 
 	return output_file
 
 
-def _render_timeline_audio(  # noqa: PLR0913
+def _render_timeline_audio(
 	input_file: Path,
 	audio_root: Path,
 	output_dir: Path,
 	units: list[MusicUnit],
 	chains: list[ChainSlot],
-	silence_threshold_db: float,
 ) -> tuple[list[Path], int]:
 	"""Render timeline: speech blocks as new files, music tracks untouched."""
 	station_audio_dir = _find_station_audio_dir(audio_root, input_file)
@@ -658,27 +784,51 @@ def _render_timeline_audio(  # noqa: PLR0913
 	timeline: list[Path] = []
 	generated_speech_count = 0
 
-	for index, (chain, unit) in enumerate(zip(chains, units, strict=True), start=1):
-		speech_tokens = chain.as_list()
-		if unit.intro is not None:
-			speech_tokens.append(unit.intro)
-
-		if speech_tokens:
-			music_file = _resolve_audio_file(unit.main_track, audio_index)
-			speech_ext = music_file.suffix
-			speech_name = f"{index:03d}_speech_before_{unit.main_track}{speech_ext}"
-			speech_out = output_dir / speech_name
-			rendered_speech = _render_speech_block(
-				speech_tokens,
-				audio_index,
-				speech_out,
-				silence_threshold_db,
+	with Progress(
+		SpinnerColumn(),
+		TextColumn("[progress.description]{task.description}"),
+		TextColumn("[cyan]{task.fields[current_track]:<40.40}"),
+		BarColumn(),
+		MofNCompleteColumn(),
+		TimeElapsedColumn(),
+		console=console,
+	) as progress:
+		task_id = progress.add_task(
+			"Rendering timeline audio",
+			total=len(units),
+			current_track="",
+		)
+		for index, (chain, unit) in enumerate(
+			zip(chains, units, strict=True),
+			start=1,
+		):
+			progress.update(
+				task_id,
+				current_track=unit.main_track,
 			)
-			timeline.append(rendered_speech)
-			generated_speech_count += 1
 
-		music_file = _resolve_audio_file(unit.main_track, audio_index)
-		timeline.append(music_file)
+			speech_tokens = chain.as_list()
+
+			if speech_tokens:
+				music_file = _resolve_audio_file(unit.main_track, audio_index)
+				speech_ext = music_file.suffix
+				speech_name = f"{index:03d}_speech_before_{unit.main_track}{speech_ext}"
+				speech_out = output_dir / speech_name
+				rendered_speech = _render_speech_block(
+					speech_tokens,
+					audio_index,
+					speech_out,
+				)
+				timeline.append(rendered_speech)
+				generated_speech_count += 1
+
+			if unit.intro is not None:
+				intro_file = _resolve_audio_file(unit.intro, audio_index)
+				timeline.append(intro_file)
+
+			music_file = _resolve_audio_file(unit.main_track, audio_index)
+			timeline.append(music_file)
+			progress.advance(task_id)
 
 	playlist_file = output_dir / "timeline.m3u"
 	playlist_file.write_text("\n".join(path.as_posix() for path in timeline) + "\n")
@@ -699,12 +849,17 @@ def _build_playlist(input_file: Path) -> tuple[list[str], list[str], int, int, i
 
 def _build_plan(
 	input_file: Path,
+	duration_by_token: dict[str, float] | None = None,
 ) -> tuple[list[str], list[MusicUnit], list[ChainSlot], list[str], int, int, int]:
 	"""Build sequence and structured unit/chain plan."""
 	tokens = _read_tokens(input_file)
 	speech_pools, music_groups, excluded = _classify_tokens(tokens)
 	units, warnings, omitted_intros = _build_music_units(music_groups)
-	chains = _allocate_speech_chains(len(units), speech_pools)
+	chains = _allocate_speech_chains(
+		len(units),
+		speech_pools,
+		duration_by_token=duration_by_token,
+	)
 	sequence = _assemble_sequence(units, chains)
 	return (
 		sequence,
@@ -741,17 +896,8 @@ def main(
 			help="Directory for generated speech clips and timeline playlist.",
 		),
 	] = Path("build/assembled"),
-	speech_silence_threshold_db: Annotated[
-		float,
-		typer.Option(
-			help=(
-				"Silence threshold in dB for speech trim (near-zero default). "
-				"Example: -60 trims very quiet tails; lower values trim less."
-			),
-		),
-	] = -60.0,
 	*,
-	render_audio: Annotated[
+	render: Annotated[
 		bool,
 		typer.Option(
 			help="Render real timeline audio files from token plan.",
@@ -759,7 +905,13 @@ def main(
 	] = False,
 ) -> None:
 	"""Assemble a station playlist from a token list file."""
+	rendered_timeline: list[Path] = []
+	generated_speech_count = 0
 	try:
+		duration_index, duration_warnings = _build_duration_index(
+			audio_root,
+			input_file,
+		)
 		(
 			sequence,
 			units,
@@ -768,18 +920,8 @@ def main(
 			total,
 			excluded,
 			omitted,
-		) = _build_plan(input_file)
-		rendered_timeline: list[Path] = []
-		generated_speech_count = 0
-		if render_audio:
-			rendered_timeline, generated_speech_count = _render_timeline_audio(
-				input_file=input_file,
-				audio_root=audio_root,
-				output_dir=output_dir,
-				units=units,
-				chains=chains,
-				silence_threshold_db=speech_silence_threshold_db,
-			)
+		) = _build_plan(input_file, duration_by_token=duration_index)
+		warnings.extend(duration_warnings)
 	except AssemblerError as exc:
 		console.print(f"[red]Error:[/red] {exc}")
 		raise typer.Exit(code=1) from exc
@@ -797,7 +939,25 @@ def main(
 		warnings=warnings,
 	)
 
-	if render_audio:
+	if render:
+		console.print("[cyan]Starting audio render...[/cyan]")
+		try:
+			rendered_timeline, generated_speech_count = _render_timeline_audio(
+				input_file=input_file,
+				audio_root=audio_root,
+				output_dir=output_dir,
+				units=units,
+				chains=chains,
+			)
+		except AssemblerError as exc:
+			console.print(f"[red]Error:[/red] {exc}")
+			raise typer.Exit(code=1) from exc
+
+		console.print(
+			"[green]Render complete:[/green] "
+			f"{generated_speech_count} speech clips, "
+			f"{len(rendered_timeline)} timeline entries.",
+		)
 		console.print(
 			f"[green]Rendered timeline:[/green] "
 			f"{(output_dir / 'timeline.m3u').as_posix()}",
