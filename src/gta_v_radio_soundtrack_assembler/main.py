@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import typer
 from rich.console import Console
@@ -77,6 +80,17 @@ class AssemblySummary:
 	total_tokens: int
 	excluded_count: int
 	omitted_intro_count: int
+	rendered_track_count: int = 0
+	generated_speech_count: int = 0
+
+
+@dataclass(slots=True)
+class AudioFormat:
+	"""Audio settings used for speech rendering."""
+
+	codec_name: str
+	sample_rate: int
+	channels: int
 
 
 def _sort_tokens(tokens: list[str]) -> list[str]:
@@ -392,6 +406,14 @@ def _render_output(
 	summary.add_row("Excluded tokens", str(summary_data.excluded_count))
 	summary.add_row("Omitted intro variants", str(summary_data.omitted_intro_count))
 	summary.add_row("Final sequence length", str(len(sequence)))
+	if summary_data.rendered_track_count > 0:
+		summary.add_row(
+			"Rendered timeline tracks", str(summary_data.rendered_track_count)
+		)
+		summary.add_row(
+			"Generated speech clips",
+			str(summary_data.generated_speech_count),
+		)
 	console.print(summary)
 
 	table = Table(title="Assembled Sequence", show_lines=False)
@@ -400,6 +422,268 @@ def _render_output(
 	for index, token in enumerate(sequence, start=1):
 		table.add_row(str(index), token)
 	console.print(table)
+
+
+def _run_subprocess(command: list[str], *, description: str) -> None:
+	"""Run a subprocess command and raise a user-facing error on failure."""
+	completed = subprocess.run(  # noqa: S603
+		command,
+		capture_output=True,
+		text=True,
+		check=False,
+	)
+	if completed.returncode == 0:
+		return
+
+	stderr = completed.stderr.strip()
+	stdout = completed.stdout.strip()
+	detail = stderr or stdout
+	message = f"{description} failed: {detail or 'unknown error'}"
+	_fail(message)
+
+
+def _run_subprocess_output(command: list[str], *, description: str) -> str:
+	"""Run a subprocess command and return stdout."""
+	completed = subprocess.run(  # noqa: S603
+		command,
+		capture_output=True,
+		text=True,
+		check=False,
+	)
+	if completed.returncode == 0:
+		return completed.stdout
+
+	stderr = completed.stderr.strip()
+	stdout = completed.stdout.strip()
+	detail = stderr or stdout
+	message = f"{description} failed: {detail or 'unknown error'}"
+	_fail(message)
+	return ""
+
+
+def _probe_audio_format(audio_file: Path) -> AudioFormat:
+	"""Probe audio format settings from a file."""
+	output = _run_subprocess_output(
+		[
+			"ffprobe",
+			"-v",
+			"error",
+			"-select_streams",
+			"a:0",
+			"-show_entries",
+			"stream=codec_name,sample_rate,channels",
+			"-of",
+			"json",
+			str(audio_file),
+		],
+		description=f"Probing audio format for {audio_file.name}",
+	)
+
+	try:
+		payload = json.loads(output)
+		streams = payload.get("streams", [])
+		if not streams:
+			message = f"No audio stream found in {audio_file}"
+			_fail(message)
+		stream = streams[0]
+		codec_name = str(stream["codec_name"])
+		sample_rate = int(stream["sample_rate"])
+		channels = int(stream["channels"])
+	except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+		message = f"Failed to parse ffprobe data for {audio_file}: {exc}"
+		_fail(message)
+
+	return AudioFormat(
+		codec_name=codec_name,
+		sample_rate=sample_rate,
+		channels=channels,
+	)
+
+
+def _trim_true_silence(
+	input_file: Path,
+	output_file: Path,
+	audio_format: AudioFormat,
+	silence_threshold_db: float,
+) -> None:
+	"""Trim leading/trailing near-silence from a speech clip."""
+	threshold_expr = f"{silence_threshold_db}dB"
+	filter_expr = (
+		"silenceremove="
+		f"start_periods=1:start_silence=0.02:start_threshold={threshold_expr}:"
+		f"stop_periods=1:stop_silence=0.02:stop_threshold={threshold_expr}"
+	)
+	_run_subprocess(
+		[
+			"ffmpeg",
+			"-y",
+			"-i",
+			str(input_file),
+			"-af",
+			filter_expr,
+			"-c:a",
+			audio_format.codec_name,
+			"-ar",
+			str(audio_format.sample_rate),
+			"-ac",
+			str(audio_format.channels),
+			str(output_file),
+		],
+		description=f"Silence trimming for {input_file.name}",
+	)
+
+
+def _concat_audio_files(input_files: list[Path], output_file: Path) -> None:
+	"""Concatenate already-format-aligned files without re-encoding."""
+	if not input_files:
+		message = "Cannot concatenate zero files."
+		_fail(message)
+
+	with tempfile.TemporaryDirectory(prefix="gta_radio_concat_") as tmp_dir:
+		concat_file = Path(tmp_dir) / "concat.txt"
+		concat_lines = [f"file '{path.as_posix()}'" for path in input_files]
+		concat_file.write_text("\n".join(concat_lines) + "\n")
+
+		_run_subprocess(
+			[
+				"ffmpeg",
+				"-y",
+				"-f",
+				"concat",
+				"-safe",
+				"0",
+				"-i",
+				str(concat_file),
+				"-c",
+				"copy",
+				str(output_file),
+			],
+			description=f"Concatenation into {output_file.name}",
+		)
+
+
+def _find_station_audio_dir(audio_root: Path, input_file: Path) -> Path:
+	"""Resolve station directory as audio/<list-stem>."""
+	station_dir = audio_root / input_file.stem
+	if station_dir.exists() and station_dir.is_dir():
+		return station_dir
+
+	message = (
+		"Station audio directory not found. Expected "
+		f"{station_dir} based on input list name {input_file.name}."
+	)
+	_fail(message)
+	return station_dir
+
+
+def _index_station_audio_files(station_audio_dir: Path) -> dict[str, Path]:
+	"""Index station audio files by stem name."""
+	file_map: dict[str, Path] = {}
+	for file_path in station_audio_dir.rglob("*"):
+		if not file_path.is_file():
+			continue
+
+		stem = file_path.stem
+		if stem in file_map:
+			message = (
+				"Duplicate audio stem detected: "
+				f"{stem} -> {file_map[stem]} and {file_path}"
+			)
+			_fail(message)
+		file_map[stem] = file_path
+
+	if not file_map:
+		message = f"No audio files found in {station_audio_dir}"
+		_fail(message)
+
+	return file_map
+
+
+def _resolve_audio_file(token: str, audio_index: dict[str, Path]) -> Path:
+	"""Resolve one token to a real station audio file path."""
+	resolved = audio_index.get(token)
+	if resolved is not None:
+		return resolved
+
+	message = f"Audio file for token {token} was not found in station audio directory."
+	_fail(message)
+	return Path()
+
+
+def _render_speech_block(
+	speech_tokens: list[str],
+	audio_index: dict[str, Path],
+	output_file: Path,
+	silence_threshold_db: float,
+) -> Path:
+	"""Trim and concatenate speech block clips."""
+	if not speech_tokens:
+		message = "Speech block render requested without tokens."
+		_fail(message)
+
+	input_files = [_resolve_audio_file(token, audio_index) for token in speech_tokens]
+	format_ref = _probe_audio_format(input_files[0])
+
+	with tempfile.TemporaryDirectory(prefix="gta_radio_trim_") as tmp_dir:
+		tmp_dir_path = Path(tmp_dir)
+		trimmed_files: list[Path] = []
+		for idx, input_file in enumerate(input_files, start=1):
+			trimmed_path = tmp_dir_path / f"trim_{idx:03d}{output_file.suffix}"
+			_trim_true_silence(
+				input_file,
+				trimmed_path,
+				format_ref,
+				silence_threshold_db,
+			)
+			trimmed_files.append(trimmed_path)
+
+		_concat_audio_files(trimmed_files, output_file)
+
+	return output_file
+
+
+def _render_timeline_audio(  # noqa: PLR0913
+	input_file: Path,
+	audio_root: Path,
+	output_dir: Path,
+	units: list[MusicUnit],
+	chains: list[ChainSlot],
+	silence_threshold_db: float,
+) -> tuple[list[Path], int]:
+	"""Render timeline: speech blocks as new files, music tracks untouched."""
+	station_audio_dir = _find_station_audio_dir(audio_root, input_file)
+	audio_index = _index_station_audio_files(station_audio_dir)
+
+	output_dir.mkdir(parents=True, exist_ok=True)
+	timeline: list[Path] = []
+	generated_speech_count = 0
+
+	for index, (chain, unit) in enumerate(zip(chains, units, strict=True), start=1):
+		speech_tokens = chain.as_list()
+		if unit.intro is not None:
+			speech_tokens.append(unit.intro)
+
+		if speech_tokens:
+			music_file = _resolve_audio_file(unit.main_track, audio_index)
+			speech_ext = music_file.suffix
+			speech_name = f"{index:03d}_speech_before_{unit.main_track}{speech_ext}"
+			speech_out = output_dir / speech_name
+			rendered_speech = _render_speech_block(
+				speech_tokens,
+				audio_index,
+				speech_out,
+				silence_threshold_db,
+			)
+			timeline.append(rendered_speech)
+			generated_speech_count += 1
+
+		music_file = _resolve_audio_file(unit.main_track, audio_index)
+		timeline.append(music_file)
+
+	playlist_file = output_dir / "timeline.m3u"
+	playlist_file.write_text("\n".join(path.as_posix() for path in timeline) + "\n")
+
+	return timeline, generated_speech_count
 
 
 def _build_playlist(input_file: Path) -> tuple[list[str], list[str], int, int, int]:
@@ -413,20 +697,89 @@ def _build_playlist(input_file: Path) -> tuple[list[str], list[str], int, int, i
 	return sequence, warnings, len(tokens), len(excluded), len(omitted_intros)
 
 
+def _build_plan(
+	input_file: Path,
+) -> tuple[list[str], list[MusicUnit], list[ChainSlot], list[str], int, int, int]:
+	"""Build sequence and structured unit/chain plan."""
+	tokens = _read_tokens(input_file)
+	speech_pools, music_groups, excluded = _classify_tokens(tokens)
+	units, warnings, omitted_intros = _build_music_units(music_groups)
+	chains = _allocate_speech_chains(len(units), speech_pools)
+	sequence = _assemble_sequence(units, chains)
+	return (
+		sequence,
+		units,
+		chains,
+		warnings,
+		len(tokens),
+		len(excluded),
+		len(omitted_intros),
+	)
+
+
 @app.command()
 def main(
-	input_file: Path = typer.Argument(
-		...,
-		exists=True,
-		file_okay=True,
-		dir_okay=False,
-		readable=True,
-		help="Path to station list file.",
-	),
+	input_file: Annotated[
+		Path,
+		typer.Argument(
+			exists=True,
+			file_okay=True,
+			dir_okay=False,
+			readable=True,
+			help="Path to station list file.",
+		),
+	],
+	audio_root: Annotated[
+		Path,
+		typer.Option(
+			help="Root directory containing station audio folders.",
+		),
+	] = Path("audio"),
+	output_dir: Annotated[
+		Path,
+		typer.Option(
+			help="Directory for generated speech clips and timeline playlist.",
+		),
+	] = Path("build/assembled"),
+	speech_silence_threshold_db: Annotated[
+		float,
+		typer.Option(
+			help=(
+				"Silence threshold in dB for speech trim (near-zero default). "
+				"Example: -60 trims very quiet tails; lower values trim less."
+			),
+		),
+	] = -60.0,
+	*,
+	render_audio: Annotated[
+		bool,
+		typer.Option(
+			help="Render real timeline audio files from token plan.",
+		),
+	] = False,
 ) -> None:
 	"""Assemble a station playlist from a token list file."""
 	try:
-		sequence, warnings, total, excluded, omitted = _build_playlist(input_file)
+		(
+			sequence,
+			units,
+			chains,
+			warnings,
+			total,
+			excluded,
+			omitted,
+		) = _build_plan(input_file)
+		rendered_timeline: list[Path] = []
+		generated_speech_count = 0
+		if render_audio:
+			rendered_timeline, generated_speech_count = _render_timeline_audio(
+				input_file=input_file,
+				audio_root=audio_root,
+				output_dir=output_dir,
+				units=units,
+				chains=chains,
+				silence_threshold_db=speech_silence_threshold_db,
+			)
 	except AssemblerError as exc:
 		console.print(f"[red]Error:[/red] {exc}")
 		raise typer.Exit(code=1) from exc
@@ -437,10 +790,18 @@ def main(
 			total_tokens=total,
 			excluded_count=excluded,
 			omitted_intro_count=omitted,
+			rendered_track_count=len(rendered_timeline),
+			generated_speech_count=generated_speech_count,
 		),
 		sequence=sequence,
 		warnings=warnings,
 	)
+
+	if render_audio:
+		console.print(
+			f"[green]Rendered timeline:[/green] "
+			f"{(output_dir / 'timeline.m3u').as_posix()}",
+		)
 
 
 if __name__ == "__main__":
