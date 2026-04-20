@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import heapq
 import json
 import re
 import subprocess
@@ -306,12 +305,6 @@ def _allocate_speech_chains(  # noqa: C901, PLR0912, PLR0915
 		chains[0].daypart_track = speech_pools["EVENING"].pop(0)
 		chains[0].daypart_kind = "EVENING"
 
-	if speech_pools["GENERAL"]:
-		chains[0].general_tracks.append(speech_pools["GENERAL"].pop(0))
-
-	if speech_pools["MONO_SOLO"]:
-		chains[0].mono_tracks.append(speech_pools["MONO_SOLO"].pop(0))
-
 	available_indices = list(range(1, unit_count)) if unit_count > 1 else []
 
 	id_tracks = speech_pools["ID"]
@@ -374,59 +367,53 @@ def _allocate_speech_chains(  # noqa: C901, PLR0912, PLR0915
 			chains[index].daypart_kind = "EVENING"
 		speech_pools["EVENING"] = []
 
-	general_tracks = speech_pools["GENERAL"]
-	if general_tracks:
-		remaining_general = general_tracks.copy()
-		speech_pools["GENERAL"] = []
+	# Minimax makespan optimisation for GENERAL and MONO_SOLO.
+	# All tokens are sorted longest-first (LPT heuristic) and assigned one at a
+	# time to the chain with the lowest current speech duration, minimising the
+	# worst-case segment length globally. MONO_SOLO is constrained to at most one
+	# per chain.
+	variable_tokens: list[tuple[str, str]] = [
+		(t, "GENERAL") for t in speech_pools["GENERAL"]
+	]
+	variable_tokens += [(t, "MONO_SOLO") for t in speech_pools["MONO_SOLO"]]
+	speech_pools["GENERAL"] = []
+	speech_pools["MONO_SOLO"] = []
 
-		# Phase 1: minimize duplicates by giving one GENERAL to chains that still
-		# do not have one. Assign longer clips first so overflow streaks can use
-		# shorter clips when unavoidable.
-		empty_general_indices = [
-			index for index, chain in enumerate(chains) if not chain.general_tracks
-		]
-		empty_capacity = min(len(empty_general_indices), len(remaining_general))
-		singles = sorted(
-			remaining_general,
-			key=lambda token: (_token_duration(token), token),
-			reverse=True,
-		)[:empty_capacity]
+	variable_tokens.sort(
+		key=lambda pair: (_token_duration(pair[0]), pair[0]),
+		reverse=True,
+	)
 
-		used_singles = set(singles)
-		remaining_general = [
-			token for token in remaining_general if token not in used_singles
-		]
-
-		for token, index in zip(singles, empty_general_indices, strict=True):
-			chains[index].general_tracks.append(token)
-
-		# Phase 2: overflow GENERAL clips are unavoidable duplicates.
-		# Place shorter clips first and distribute by smallest current streak.
-		extra_tokens = sorted(
-			remaining_general,
-			key=lambda token: (_token_duration(token), token),
+	chain_totals: list[float] = [
+		sum(
+			_token_duration(t)
+			for t in (
+				chain.id_track,
+				chain.daypart_track,
+				*chain.general_tracks,
+				*chain.mono_tracks,
+			)
+			if t is not None
 		)
-		heap: list[tuple[int, int]] = [
-			(len(chain.general_tracks), index) for index, chain in enumerate(chains)
-		]
-		heapq.heapify(heap)
-		for token in extra_tokens:
-			count, index = heapq.heappop(heap)
-			chains[index].general_tracks.append(token)
-			heapq.heappush(heap, (count + 1, index))
+		for chain in chains
+	]
 
-	mono_tracks = speech_pools["MONO_SOLO"]
-	if mono_tracks:
-		if available_indices:
-			_allocate_single_slot_category(
-				"MONO_SOLO", "mono_tracks", available_indices
-			)
+	for token, category in variable_tokens:
+		token_dur = _token_duration(token)
+		if category == "GENERAL":
+			target = min(range(unit_count), key=lambda i: chain_totals[i])
+			chains[target].general_tracks.append(token)
 		else:
-			message = (
-				"No remaining chain slots for MONO_SOLO tracks. "
-				"MONO_SOLO currently allows at most one track per chain."
-			)
-			_fail(message)
+			mono_free = [i for i in range(unit_count) if not chains[i].mono_tracks]
+			if not mono_free:
+				message = (
+					"Could not place all MONO_SOLO tracks: "
+					"more MONO_SOLOs than available chains."
+				)
+				_fail(message)
+			target = min(mono_free, key=lambda i: chain_totals[i])
+			chains[target].mono_tracks.append(token)
+		chain_totals[target] += token_dur
 
 	# Fail if anything was left unallocated.
 	leftovers: dict[str, list[str]] = {
