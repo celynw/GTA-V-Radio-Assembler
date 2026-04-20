@@ -1,0 +1,86 @@
+default: true
+
+MD001: true   # heading-increment: Heading levels should only increment by one level at a time
+MD003:        # heading-style: Heading style
+  style: atx
+MD004:        # ul-style: Unordered list style
+  style: asterisk
+MD005: true   # list-indent: Inconsistent indentation for list items at the same level
+MD007:        # ul-indent: Unordered list indentation
+  indent: 2
+MD009:        # no-trailing-spaces: Trailing spaces
+  br_spaces: 0
+  list_item_empty_lines: false
+  strict: true
+MD010: true   # no-hard-tabs: Hard tabs
+MD011: true   # no-reversed-links: Reversed link syntax
+MD012:        # no-multiple-blanks: Multiple consecutive blank lines
+  maximum: 1
+MD013: false  # line-length: Line length
+MD014: true   # commands-show-output: Dollar signs used before commands without showing output
+MD018: true   # no-missing-space-atx: No space after hash on atx style heading
+MD019: true   # no-multiple-space-atx: Multiple spaces after hash on atx style heading
+MD020: true   # no-missing-space-closed-atx: No space inside hashes on closed atx style heading
+MD021: true   # no-multiple-space-closed-atx: Multiple spaces inside hashes on closed atx style heading
+MD022: true   # blanks-around-headings: Headings should be surrounded by blank lines
+MD023: true   # heading-start-left: Headings must start at the beginning of the line
+MD024:        # no-duplicate-heading: Multiple headings with the same content
+  siblings_only: true
+MD025: true   # single-title/single-h1: Multiple top-level headings in the same document
+MD026: true   # no-trailing-punctuation: Trailing punctuation in heading
+MD027:        # no-multiple-space-blockquote: Multiple spaces after blockquote symbol
+  list_items: true
+MD028: true   # no-blanks-blockquote: Blank line inside blockquote
+MD029:        # ol-prefix: Ordered list item prefix
+  style: ordered
+MD030:        # list-marker-space: Spaces after list markers
+  ul_single: 1
+  ol_single: 1
+  ul_multi: 1
+  ol_multi: 1
+MD031:        # blanks-around-fences: Fenced code blocks should be surrounded by blank lines
+  list_items: false
+MD032: true   # blanks-around-lists: Lists should be surrounded by blank lines
+MD033: true   # no-inline-html: Inline HTML
+MD034: false  # no-bare-urls: Bare URL used
+MD035:        # hr-style: Horizontal rule style
+  style: "---"
+MD036: true   # no-emphasis-as-heading: Emphasis used instead of a heading
+MD037: true   # no-space-inside-emphasis: Spaces inside emphasis markers
+MD038: true   # no-space-in-code: Spaces inside code span elements
+MD039: true   # no-space-in-links: Spaces inside link text
+MD040:        # fenced-code-language: Fenced code blocks should have a language specified
+  language_only: false
+MD041:        # first-line-heading/first-line-h1: First line in file should be a top-level heading
+  allow_preamble: false
+  level: 1
+MD042: true   # no-empty-links: No empty links
+MD043: false  # required-headings: Required heading structure
+MD044: false  # proper-names: Proper names should have the correct capitalisation
+MD045: false  # no-alt-text: Images should have alternate text
+MD046:        # code-block-style: Code block style
+  style: fenced
+MD047: true   # single-trailing-newline: Files should end with a single newline character
+MD048:        # code-fence-style: Code fence style
+  style: backtick
+MD049:        # emphasis-style: Emphasis style
+  style: underscore
+MD050:        # strong-style: Strong style
+  style: asterisk
+MD051:        # link-fragments: Link fragments should be valid
+  ignore_case: false
+MD052:        # reference-links-images: Reference links and images should use a defined label
+  shortcut_syntax: false
+MD053: true   # link-image-reference-definitions: Link and image reference definitions should be needed
+MD054:        # link-image-style: Link and image style
+  autolink: false
+  collapsed: false
+  full: false
+  inline: true
+  shortcut: false
+  url_inline: false
+MD055:        # table-pipe-style: Table pipe style
+  style: leading_and_trailing
+MD056: true   # table-column-count: Table column count
+MD058: true   # blanks-around-tables: Tables should be surrounded by blank lines
+MD059: true   # descriptive-link-text: Link text should be descriptive

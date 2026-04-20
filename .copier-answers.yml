@@ -1,0 +1,8 @@
+# Changes here will be overwritten by Copier; do not edit
+_commit: v1.2.5
+_src_path: git@github.com:celynw/python-project-template.git
+author_email: 3299161+celynw@users.noreply.github.com
+author_name: Celyn Walters
+project_name: GTA V Radio Soundtrack Assembler
+project_slug: gta_v_radio_soundtrack_assembler
+python_version: '3.14'
