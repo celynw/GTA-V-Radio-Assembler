@@ -58,7 +58,7 @@ class ChainSlot:
 class AssemblySummary:
 	"""Small summary payload for rendering output."""
 
-	input_file: Path
+	audio_dir: Path
 	total_tokens: int
 	excluded_count: int
 	omitted_intro_count: int

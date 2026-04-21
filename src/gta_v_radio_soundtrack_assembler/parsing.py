@@ -13,16 +13,21 @@ class TokenParser:
 	"""Parse and classify tokens from input file."""
 
 	@staticmethod
-	def read_tokens(input_file: Path) -> list[str]:
-		"""Read and normalize raw tokens."""
-		if not input_file.exists():
-			message = f"Input file not found: {input_file}"
+	def read_tokens_from_folder(audio_dir: Path) -> list[str]:
+		"""Read tokens from audio folder by listing file stems."""
+		if not audio_dir.exists() or not audio_dir.is_dir():
+			message = f"Audio directory not found: {audio_dir}"
 			fail(message)
 
-		raw_tokens = [line.strip() for line in input_file.read_text().splitlines()]
-		tokens = [token for token in raw_tokens if token]
+		audio_extensions = {".wav", ".mp3", ".flac", ".aac"}
+		tokens = [
+			file_path.stem
+			for file_path in sorted(audio_dir.iterdir())
+			if file_path.is_file() and file_path.suffix.lower() in audio_extensions
+		]
+
 		if not tokens:
-			message = "Input file is empty after removing blank lines."
+			message = f"No audio files found in {audio_dir}"
 			fail(message)
 		return tokens
 

@@ -259,20 +259,6 @@ class AudioProcessor:
 		return len(tracks)
 
 	@staticmethod
-	def find_station_audio_dir(audio_root: Path, input_file: Path) -> Path:
-		"""Resolve station directory as audio/<list-stem>."""
-		station_dir = audio_root / input_file.stem
-		if station_dir.exists() and station_dir.is_dir():
-			return station_dir
-
-		message = (
-			"Station audio directory not found. Expected "
-			f"{station_dir} based on input list name {input_file.name}."
-		)
-		fail(message)
-		return station_dir
-
-	@staticmethod
 	def index_station_audio_files(station_audio_dir: Path) -> dict[str, Path]:
 		"""Index station audio files by stem name."""
 		file_map: dict[str, Path] = {}
@@ -297,15 +283,13 @@ class AudioProcessor:
 
 	@staticmethod
 	def build_duration_index(
-		audio_root: Path,
-		input_file: Path,
+		audio_dir: Path,
 	) -> tuple[dict[str, float], list[str]]:
 		"""Best-effort token duration index used for scheduling optimization."""
-		station_dir = audio_root / input_file.stem
-		if not station_dir.exists() or not station_dir.is_dir():
+		if not audio_dir.exists() or not audio_dir.is_dir():
 			return {}, []
 
-		audio_index = AudioProcessor.index_station_audio_files(station_dir)
+		audio_index = AudioProcessor.index_station_audio_files(audio_dir)
 		duration_index: dict[str, float] = {}
 		warnings: list[str] = []
 		for token, audio_file in audio_index.items():

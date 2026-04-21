@@ -27,23 +27,19 @@ class TimelineRenderer:
 
 	@staticmethod
 	def render(  # noqa: PLR0913
-		input_file: Path,
-		audio_root: Path,
-		output_dir: Path,
+		audio_dir: Path,
+		temp_dir: Path,
 		units: list[MusicUnit],
 		chains: list[ChainSlot],
 		*,
-		final_album_dir: Path | None = None,
-		final_album_sample_rate: int = 32000,
-		final_album_compression_level: int = 8,
+		output_dir: Path | None = None,
+		sample_rate: int = 32000,
+		compression_level: int = 8,
 	) -> tuple[list[Path], int, int]:
 		"""Render timeline and optionally export one FLAC per final row."""
-		station_audio_dir = AudioProcessor.find_station_audio_dir(
-			audio_root, input_file
-		)
-		audio_index = AudioProcessor.index_station_audio_files(station_audio_dir)
+		audio_index = AudioProcessor.index_station_audio_files(audio_dir)
 
-		output_dir.mkdir(parents=True, exist_ok=True)
+		temp_dir.mkdir(parents=True, exist_ok=True)
 		timeline: list[Path] = []
 		album_rows: list[tuple[str, Path]] = []
 		generated_speech_count = 0
@@ -81,7 +77,7 @@ class TimelineRenderer:
 					speech_name = (
 						f"{index:03d}_speech_before_{unit.main_track}{speech_ext}"
 					)
-					speech_out = output_dir / speech_name
+					speech_out = temp_dir / speech_name
 					rendered_speech = AudioProcessor.render_speech_block(
 						speech_tokens,
 						audio_index,
@@ -105,16 +101,13 @@ class TimelineRenderer:
 				album_rows.append((unit.main_track, music_file))
 				progress.advance(task_id)
 
-		playlist_file = output_dir / "timeline.m3u"
-		playlist_file.write_text("\n".join(path.as_posix() for path in timeline) + "\n")
-
 		rendered_album_track_count = 0
-		if final_album_dir is not None:
+		if output_dir is not None:
 			rendered_album_track_count = AudioProcessor.render_final_album_flacs(
 				album_rows,
-				final_album_dir,
-				sample_rate=final_album_sample_rate,
-				compression_level=final_album_compression_level,
+				output_dir,
+				sample_rate=sample_rate,
+				compression_level=compression_level,
 			)
 
 		return timeline, generated_speech_count, rendered_album_track_count

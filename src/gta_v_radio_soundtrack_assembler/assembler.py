@@ -18,11 +18,11 @@ class PlaylistAssembler:
 
 	@staticmethod
 	def build_plan(
-		input_file: Path,
+		audio_dir: Path,
 		duration_by_token: dict[str, float] | None = None,
 	) -> tuple[list[str], list[MusicUnit], list[ChainSlot], list[str], int, int, int]:
 		"""Build sequence and structured unit/chain plan."""
-		tokens = TokenParser.read_tokens(input_file)
+		tokens = TokenParser.read_tokens_from_folder(audio_dir)
 		speech_pools, music_groups, excluded = TokenParser.classify_tokens(tokens)
 		units, warnings, omitted_intros = MusicUnitBuilder.build(music_groups)
 		chains = Scheduler.allocate(

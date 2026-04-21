@@ -46,7 +46,7 @@ class OutputRenderer:
 		summary = Table(title="Assembly Summary", show_header=True)
 		summary.add_column("Metric")
 		summary.add_column("Value", justify="right")
-		summary.add_row("Input file", str(summary_data.input_file))
+		summary.add_row("Audio directory", str(summary_data.audio_dir))
 		summary.add_row("Input tokens", str(summary_data.total_tokens))
 		summary.add_row("Excluded tokens", str(summary_data.excluded_count))
 		summary.add_row("Omitted intro variants", str(summary_data.omitted_intro_count))
