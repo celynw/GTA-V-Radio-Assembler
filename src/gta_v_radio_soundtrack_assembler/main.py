@@ -86,6 +86,11 @@ def main(
 			omitted,
 		) = PlaylistAssembler.build_plan(audio_dir, duration_by_token=duration_index)
 		warnings.extend(duration_warnings)
+		if render is not None and render.exists() and any(render.iterdir()):
+			warnings.append(
+				f"Output directory {render.as_posix()!r} is not empty; "
+				"existing files may be mixed with new FLAC output."
+			)
 	except AssemblerError as exc:
 		console.print(f"[red]Error:[/red] {exc}")
 		raise typer.Exit(code=1) from exc
@@ -104,6 +109,14 @@ def main(
 		duration_by_token=duration_index,
 		warnings=warnings,
 	)
+
+	if warnings:
+		answer = typer.prompt(
+			f"{len(warnings)} warning(s), continue?",
+			default="y",
+		)
+		if answer.strip().lower() not in {"y", "yes"}:
+			raise typer.Exit(code=0)
 
 	if render:
 		console.print("[cyan]Starting audio render...[/cyan]")

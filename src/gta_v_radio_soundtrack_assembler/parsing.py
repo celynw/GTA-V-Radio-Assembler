@@ -1,9 +1,12 @@
 """Token parsing and classification."""
 
+import re
 from typing import TYPE_CHECKING
 
 from .types import EXCLUDED_CATEGORIES, SPEECH_CATEGORIES, MusicGroup
 from .utilities import fail, sort_tokens, split_base_and_suffix
+
+_EXPECTED_TOKEN_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 if TYPE_CHECKING:
 	from pathlib import Path
@@ -34,15 +37,21 @@ class TokenParser:
 	@staticmethod
 	def classify_tokens(
 		tokens: list[str],
-	) -> tuple[dict[str, list[str]], dict[str, MusicGroup], list[str]]:
+	) -> tuple[dict[str, list[str]], dict[str, MusicGroup], list[str], list[str]]:
 		"""Classify tokens into speech pools, music groups, and exclusions."""
 		speech_pools: dict[str, list[str]] = {
 			category: [] for category in SPEECH_CATEGORIES
 		}
 		music_groups: dict[str, MusicGroup] = {}
 		excluded: list[str] = []
+		format_warnings: list[str] = []
 
 		for token in tokens:
+			if not _EXPECTED_TOKEN_RE.match(token):
+				format_warnings.append(
+					f"Unexpected token format: [white]{token!r}[/white] "
+					"(expected uppercase letters, digits, and underscores only)"
+				)
 			base, suffix = split_base_and_suffix(token)
 
 			if base in EXCLUDED_CATEGORIES:
@@ -65,4 +74,4 @@ class TokenParser:
 		for category, items in speech_pools.items():
 			speech_pools[category] = sort_tokens(items)
 
-		return speech_pools, music_groups, sort_tokens(excluded)
+		return speech_pools, music_groups, sort_tokens(excluded), format_warnings

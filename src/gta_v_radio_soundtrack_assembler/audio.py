@@ -20,6 +20,7 @@ from .types import AudioFormat
 from .utilities import fail
 
 console = Console()
+_SHORT_AUDIO_SECONDS = 0.5
 
 
 class AudioProcessor:
@@ -294,13 +295,17 @@ class AudioProcessor:
 		warnings: list[str] = []
 		for token, audio_file in audio_index.items():
 			try:
-				duration_index[token] = AudioProcessor.probe_audio_duration_seconds(
-					audio_file
-				)
+				duration = AudioProcessor.probe_audio_duration_seconds(audio_file)
+				duration_index[token] = duration
+				if duration < _SHORT_AUDIO_SECONDS:
+					warnings.append(
+						f"[white]{audio_file.name}[/white] is very short "
+						f"({duration:.2f}s); it may be corrupted or empty."
+					)
 			except Exception:  # noqa: BLE001
 				warnings.append(
-					"Duration probe failed for "
-					f"{audio_file.name}; using fallback scheduling weight.",
+					f"Duration probe failed for [white]{audio_file.name}[/white]; "
+					"using fallback scheduling weight.",
 				)
 
 		return duration_index, warnings

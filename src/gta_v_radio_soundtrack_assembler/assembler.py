@@ -23,8 +23,11 @@ class PlaylistAssembler:
 	) -> tuple[list[str], list[MusicUnit], list[ChainSlot], list[str], int, int, int]:
 		"""Build sequence and structured unit/chain plan."""
 		tokens = TokenParser.read_tokens_from_folder(audio_dir)
-		speech_pools, music_groups, excluded = TokenParser.classify_tokens(tokens)
+		speech_pools, music_groups, excluded, format_warnings = (
+			TokenParser.classify_tokens(tokens)
+		)
 		units, warnings, omitted_intros = MusicUnitBuilder.build(music_groups)
+		warnings = [*format_warnings, *warnings]
 		chains = Scheduler.allocate(
 			len(units),
 			speech_pools,

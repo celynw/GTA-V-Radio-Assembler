@@ -24,19 +24,25 @@ class MusicUnitBuilder:
 			if not mains:
 				warnings.append(
 					"Skipping orphan intro group "
-					f"{base}: intros exist but no main track token.",
+					f"[white]{base}[/white]: intros exist but no main track token."
 				)
 				omitted_intros.extend(intros)
 				continue
 
 			if len(mains) > 1:
 				message = (
-					f"Multiple main tracks detected for base {base}: {', '.join(mains)}"
+					"Multiple main tracks detected for base"
+					f"[white]{base}[/white]: {', '.join(mains)}"
 				)
 				fail(message)
 
 			selected_intro = intros[0] if intros else None
-			omitted_intros.extend(intro for intro in intros[1:])
+			# for extra in intros[1:]:
+			# 	omitted_intros.append(extra)
+			# 	warnings.append(
+			# 		f"Intro variant {extra!r} omitted for {base!r}; "
+			# 		f"only the first ({intros[0]!r}) is used."
+			# 	)
 			units.append(
 				MusicUnit(base=base, main_track=mains[0], intro=selected_intro)
 			)

@@ -34,10 +34,6 @@ class OutputRenderer:
 		warnings: list[str],
 	) -> None:
 		"""Render assembled output in a compact rich table."""
-		if warnings:
-			for warning in warnings:
-				console.print(f"[yellow]Warning:[/yellow] {warning}")
-
 		total_tokens = sum(
 			len(chain.as_list()) + (1 if unit.intro else 0) + 1
 			for chain, unit in zip(chains, units, strict=True)
@@ -100,3 +96,7 @@ class OutputRenderer:
 			)
 
 		console.print(table)
+
+		if warnings:
+			for warning in warnings:
+				console.print(f"[yellow]Warning:[/yellow] {warning}")
