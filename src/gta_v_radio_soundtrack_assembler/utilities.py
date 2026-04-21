@@ -2,6 +2,8 @@
 
 import re
 
+from titlecase import titlecase as _titlecase
+
 from .types import AssemblerError
 
 _SUFFIX_PATTERN = re.compile(r"^(?P<base>.+)_(?P<num>\d+)$")
@@ -28,6 +30,18 @@ def sort_tokens(tokens: list[str]) -> list[str]:
 		return (base, suffix if suffix is not None else -1, token)
 
 	return sorted(tokens, key=_key)
+
+
+def format_track_name(token: str, *, is_intro: bool = False) -> str:
+	"""Format a raw token into a human-readable track title.
+
+	Strips the numeric variant suffix from intro tokens, replaces underscores
+	with spaces, and applies AP-style title case.  Intro tracks are prefixed
+	with ``"Intro: "``.
+	"""
+	base = split_base_and_suffix(token)[0] if is_intro else token
+	titled = _titlecase(base.replace("_", " ").lower())
+	return f"Intro: {titled}" if is_intro else titled
 
 
 def spread_indices(item_count: int, candidate_indices: list[int]) -> list[int]:

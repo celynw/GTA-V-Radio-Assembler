@@ -13,6 +13,7 @@ from rich.progress import (
 )
 
 from .audio import AudioProcessor
+from .utilities import format_track_name
 
 if TYPE_CHECKING:
 	from pathlib import Path
@@ -43,6 +44,7 @@ class TimelineRenderer:
 		timeline: list[Path] = []
 		album_rows: list[tuple[str, Path]] = []
 		generated_speech_count = 0
+		talk_break_number = 0
 
 		with Progress(
 			SpinnerColumn(),
@@ -84,7 +86,13 @@ class TimelineRenderer:
 						speech_out,
 					)
 					timeline.append(rendered_speech)
-					album_rows.append((" + ".join(speech_tokens), rendered_speech))
+					talk_break_number += 1
+					album_rows.append(
+						(
+							f"Talk break {talk_break_number}",
+							rendered_speech,
+						)
+					)
 					generated_speech_count += 1
 
 				if unit.intro is not None:
@@ -92,13 +100,18 @@ class TimelineRenderer:
 						unit.intro, audio_index
 					)
 					timeline.append(intro_file)
-					album_rows.append((unit.intro, intro_file))
+					album_rows.append(
+						(
+							format_track_name(unit.intro, is_intro=True),
+							intro_file,
+						)
+					)
 
 				music_file = AudioProcessor.resolve_audio_file(
 					unit.main_track, audio_index
 				)
 				timeline.append(music_file)
-				album_rows.append((unit.main_track, music_file))
+				album_rows.append((format_track_name(unit.main_track), music_file))
 				progress.advance(task_id)
 
 		rendered_album_track_count = 0
