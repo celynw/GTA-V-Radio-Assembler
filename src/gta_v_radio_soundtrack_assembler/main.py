@@ -34,15 +34,9 @@ def main(
 	],
 	*,
 	render: Annotated[
-		bool,
-		typer.Option(
-			help="Render real timeline audio files from token plan.",
-		),
-	] = False,
-	output_dir: Annotated[
 		Path | None,
 		typer.Option(
-			help="Directory for final FLAC album. Requires --render.",
+			help="Render to this directory (final FLAC album). Omit to skip rendering.",
 		),
 	] = None,
 	sample_rate: Annotated[
@@ -59,25 +53,18 @@ def main(
 	] = 8,
 ) -> None:
 	"""Assemble a radio station playlist from WAV audio files."""
-	if output_dir is not None and not render:
-		console.print(
-			"[red]Error:[/red] --output-dir requires --render so speech "
-			"blocks can be materialized.",
-		)
-		raise typer.Exit(code=1)
-
 	if not (
 		MIN_FLAC_COMPRESSION_LEVEL <= compression_level <= MAX_FLAC_COMPRESSION_LEVEL
 	):
 		console.print(
-			"[red]Error:[/red] --final-album-compression-level must be between "
+			"[red]Error:[/red] --compression-level must be between "
 			f"{MIN_FLAC_COMPRESSION_LEVEL} and {MAX_FLAC_COMPRESSION_LEVEL}.",
 		)
 		raise typer.Exit(code=1)
 
 	if sample_rate <= 0:
 		console.print(
-			"[red]Error:[/red] --final-album-sample-rate must be positive.",
+			"[red]Error:[/red] --sample-rate must be positive.",
 		)
 		raise typer.Exit(code=1)
 
@@ -131,7 +118,7 @@ def main(
 					temp_dir=Path(tmp_dir),
 					units=units,
 					chains=chains,
-					output_dir=output_dir,
+					output_dir=render,
 					sample_rate=sample_rate,
 					compression_level=compression_level,
 				)
@@ -144,12 +131,11 @@ def main(
 				f"{generated_speech_count} speech clips, "
 				f"{len(rendered_timeline)} timeline entries.",
 			)
-			if output_dir is not None:
-				console.print(
-					"[green]Final album rendered:[/green] "
-					f"{rendered_album_track_count} FLAC files in "
-					f"{output_dir.as_posix()}",
-				)
+			console.print(
+				"[green]Final album rendered:[/green] "
+				f"{rendered_album_track_count} FLAC files in "
+				f"{render.as_posix()}",
+			)
 
 
 if __name__ == "__main__":
