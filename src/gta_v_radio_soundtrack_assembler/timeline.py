@@ -26,14 +26,18 @@ class TimelineRenderer:
 	"""Render timeline audio from units and chains."""
 
 	@staticmethod
-	def render(
+	def render(  # noqa: PLR0913
 		input_file: Path,
 		audio_root: Path,
 		output_dir: Path,
 		units: list[MusicUnit],
 		chains: list[ChainSlot],
-	) -> tuple[list[Path], int]:
-		"""Render timeline: speech blocks, intros, and mains."""
+		*,
+		final_album_dir: Path | None = None,
+		final_album_sample_rate: int = 32000,
+		final_album_compression_level: int = 8,
+	) -> tuple[list[Path], int, int]:
+		"""Render timeline and optionally export one FLAC per final row."""
 		station_audio_dir = AudioProcessor.find_station_audio_dir(
 			audio_root, input_file
 		)
@@ -41,6 +45,7 @@ class TimelineRenderer:
 
 		output_dir.mkdir(parents=True, exist_ok=True)
 		timeline: list[Path] = []
+		album_rows: list[tuple[str, Path]] = []
 		generated_speech_count = 0
 
 		with Progress(
@@ -83,6 +88,7 @@ class TimelineRenderer:
 						speech_out,
 					)
 					timeline.append(rendered_speech)
+					album_rows.append((" + ".join(speech_tokens), rendered_speech))
 					generated_speech_count += 1
 
 				if unit.intro is not None:
@@ -90,14 +96,25 @@ class TimelineRenderer:
 						unit.intro, audio_index
 					)
 					timeline.append(intro_file)
+					album_rows.append((unit.intro, intro_file))
 
 				music_file = AudioProcessor.resolve_audio_file(
 					unit.main_track, audio_index
 				)
 				timeline.append(music_file)
+				album_rows.append((unit.main_track, music_file))
 				progress.advance(task_id)
 
 		playlist_file = output_dir / "timeline.m3u"
 		playlist_file.write_text("\n".join(path.as_posix() for path in timeline) + "\n")
 
-		return timeline, generated_speech_count
+		rendered_album_track_count = 0
+		if final_album_dir is not None:
+			rendered_album_track_count = AudioProcessor.render_final_album_flacs(
+				album_rows,
+				final_album_dir,
+				sample_rate=final_album_sample_rate,
+				compression_level=final_album_compression_level,
+			)
+
+		return timeline, generated_speech_count, rendered_album_track_count

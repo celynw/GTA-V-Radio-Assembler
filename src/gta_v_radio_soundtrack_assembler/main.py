@@ -15,10 +15,12 @@ from .types import AssemblerError, AssemblySummary
 
 app = typer.Typer()
 console = Console()
+MIN_FLAC_COMPRESSION_LEVEL = 0
+MAX_FLAC_COMPRESSION_LEVEL = 12
 
 
 @app.command()
-def main(
+def main(  # noqa: PLR0913
 	input_file: Annotated[
 		Path,
 		typer.Argument(
@@ -48,10 +50,56 @@ def main(
 			help="Render real timeline audio files from token plan.",
 		),
 	] = False,
+	final_album_dir: Annotated[
+		Path | None,
+		typer.Option(
+			help=(
+				"Render one numbered FLAC per final sequence row into this "
+				"directory. Requires --render."
+			),
+		),
+	] = None,
+	final_album_sample_rate: Annotated[
+		int,
+		typer.Option(
+			help="Sample rate (Hz) for final album FLAC export.",
+		),
+	] = 32000,
+	final_album_compression_level: Annotated[
+		int,
+		typer.Option(
+			help="FLAC compression level for final album export (0-12).",
+		),
+	] = 8,
 ) -> None:
 	"""Assemble a station playlist from a token list file."""
+	if final_album_dir is not None and not render:
+		console.print(
+			"[red]Error:[/red] --final-album-dir requires --render so speech "
+			"blocks can be materialized.",
+		)
+		raise typer.Exit(code=1)
+
+	if not (
+		MIN_FLAC_COMPRESSION_LEVEL
+		<= final_album_compression_level
+		<= MAX_FLAC_COMPRESSION_LEVEL
+	):
+		console.print(
+			"[red]Error:[/red] --final-album-compression-level must be between "
+			f"{MIN_FLAC_COMPRESSION_LEVEL} and {MAX_FLAC_COMPRESSION_LEVEL}.",
+		)
+		raise typer.Exit(code=1)
+
+	if final_album_sample_rate <= 0:
+		console.print(
+			"[red]Error:[/red] --final-album-sample-rate must be positive.",
+		)
+		raise typer.Exit(code=1)
+
 	rendered_timeline: list[Path] = []
 	generated_speech_count = 0
+	rendered_album_track_count = 0
 	try:
 		console.print("[cyan]Probing audio durations...[/cyan]")
 		duration_index, duration_warnings = AudioProcessor.build_duration_index(
@@ -90,12 +138,19 @@ def main(
 	if render:
 		console.print("[cyan]Starting audio render...[/cyan]")
 		try:
-			rendered_timeline, generated_speech_count = TimelineRenderer.render(
+			(
+				rendered_timeline,
+				generated_speech_count,
+				rendered_album_track_count,
+			) = TimelineRenderer.render(
 				input_file=input_file,
 				audio_root=audio_root,
 				output_dir=output_dir,
 				units=units,
 				chains=chains,
+				final_album_dir=final_album_dir,
+				final_album_sample_rate=final_album_sample_rate,
+				final_album_compression_level=final_album_compression_level,
 			)
 		except AssemblerError as exc:
 			console.print(f"[red]Error:[/red] {exc}")
@@ -110,6 +165,12 @@ def main(
 			f"[green]Rendered timeline:[/green] "
 			f"{(output_dir / 'timeline.m3u').as_posix()}",
 		)
+		if final_album_dir is not None:
+			console.print(
+				"[green]Final album rendered:[/green] "
+				f"{rendered_album_track_count} FLAC files in "
+				f"{final_album_dir.as_posix()}",
+			)
 
 
 if __name__ == "__main__":

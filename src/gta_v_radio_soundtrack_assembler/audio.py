@@ -1,16 +1,31 @@
 """Audio processing operations."""
 
 import json
+import re
 import subprocess
 import tempfile
 from pathlib import Path
 
+from rich.console import Console
+from rich.progress import (
+	BarColumn,
+	MofNCompleteColumn,
+	Progress,
+	SpinnerColumn,
+	TextColumn,
+	TimeElapsedColumn,
+)
+
 from .types import AudioFormat
 from .utilities import fail
+
+console = Console()
 
 
 class AudioProcessor:
 	"""Handle all audio file operations."""
+
+	_INVALID_FILENAME_CHARS = re.compile(r"[\\/:*?\"<>|]")
 
 	@staticmethod
 	def run_subprocess(command: list[str], *, description: str) -> None:
@@ -170,6 +185,78 @@ class AudioProcessor:
 				],
 				description=f"Concatenation into {output_file.name}",
 			)
+
+	@staticmethod
+	def transcode_to_flac(
+		input_file: Path,
+		output_file: Path,
+		*,
+		sample_rate: int,
+		compression_level: int,
+	) -> None:
+		"""Transcode one source file into FLAC with explicit output settings."""
+		output_file.parent.mkdir(parents=True, exist_ok=True)
+		AudioProcessor.run_subprocess(
+			[
+				"ffmpeg",
+				"-y",
+				"-i",
+				str(input_file),
+				"-ar",
+				str(sample_rate),
+				"-c:a",
+				"flac",
+				"-compression_level",
+				str(compression_level),
+				str(output_file),
+			],
+			description=f"FLAC transcode for {input_file.name}",
+		)
+
+	@staticmethod
+	def sanitize_filename(raw_name: str) -> str:
+		"""Return a filesystem-safe display name for generated album tracks."""
+		sanitized = AudioProcessor._INVALID_FILENAME_CHARS.sub("_", raw_name)
+		sanitized = " ".join(sanitized.split()).strip()
+		return sanitized or "untitled"
+
+	@staticmethod
+	def render_final_album_flacs(
+		tracks: list[tuple[str, Path]],
+		album_dir: Path,
+		*,
+		sample_rate: int,
+		compression_level: int,
+	) -> int:
+		"""Render one numbered FLAC file per timeline row into album_dir."""
+		album_dir.mkdir(parents=True, exist_ok=True)
+		with Progress(
+			SpinnerColumn(),
+			TextColumn("[progress.description]{task.description}"),
+			TextColumn("[cyan]{task.fields[current_track]:<40.40}"),
+			BarColumn(),
+			MofNCompleteColumn(),
+			TimeElapsedColumn(),
+			console=console,
+		) as progress:
+			task_id = progress.add_task(
+				"Converting final album to FLAC",
+				total=len(tracks),
+				current_track="",
+			)
+			for index, (display_name, source_file) in enumerate(tracks, start=1):
+				safe_name = AudioProcessor.sanitize_filename(display_name)
+				output_file = album_dir / f"{index:02d} {safe_name}.flac"
+				progress.update(task_id, current_track=safe_name)
+				AudioProcessor.transcode_to_flac(
+					source_file,
+					output_file,
+					sample_rate=sample_rate,
+					compression_level=compression_level,
+				)
+				progress.advance(task_id)
+
+		return len(tracks)
 
 	@staticmethod
 	def find_station_audio_dir(audio_root: Path, input_file: Path) -> Path:
