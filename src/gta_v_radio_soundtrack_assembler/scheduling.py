@@ -163,17 +163,28 @@ class Scheduler:
 			if category == "GENERAL":
 				target = min(range(unit_count), key=lambda i: chain_totals[i])
 				chains[target].general_tracks.append(token)
+				chain_totals[target] += token_dur
 			else:
-				mono_free = [i for i in range(unit_count) if not chains[i].mono_tracks]
-				if not mono_free:
-					message = (
-						"Could not place all MONO_SOLO tracks: "
-						"more MONO_SOLOs than available chains."
-					)
-					fail(message)
-				target = min(mono_free, key=lambda i: chain_totals[i])
-				chains[target].mono_tracks.append(token)
-			chain_totals[target] += token_dur
+				# MONO_SOLO placement:
+				# - Chains WITH an ID track can have multiple MONOs (separated by ID).
+				# - Chains WITHOUT an ID track can have at most one MONO.
+				# - This allows much higher flexibility in mono placement.
+				chains_with_id = [
+					i for i in range(unit_count) if chains[i].id_track is not None
+				]
+				chains_no_id_no_mono = [
+					i
+					for i in range(unit_count)
+					if chains[i].id_track is None and not chains[i].mono_tracks
+				]
+				# Prioritize chains with ID (can hold multiples), then
+				# chains without ID that have no mono yet (fallback).
+				mono_candidates = chains_with_id + chains_no_id_no_mono
+
+				if mono_candidates:
+					target = min(mono_candidates, key=lambda i: chain_totals[i])
+					chains[target].mono_tracks.append(token)
+					chain_totals[target] += token_dur
 
 		# Fail if anything was left unallocated.
 		leftovers: dict[str, list[str]] = {
